@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장'], ['globalOneExecuteBtn', '1회 실행'], ['globalImmediatelyExecuteBtn', '즉시 실행']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+<form id="setting">
+<nav>
+  {{ macros.m_tab_head_start() }}
+    {{ macros.m_tab_head('filter_mode', '필터 모드', true) }}
+    {{ macros.m_tab_head('blacklist', '블랙리스트 모드', false) }}
+    {{ macros.m_tab_head('whitelist', '화이트리스트 모드', false) }}
+    {{ macros.m_tab_head('handling', '예고편 등 처리', false) }}
+    {{ macros.m_tab_head('schedule', '스케줄링 & DB', false) }}
+  {{ macros.m_tab_head_end() }}
+</nav>
+
+<div class="tab-content" id="nav-tabContent">
+  {{ macros.m_tab_content_start('filter_mode', true) }}
+    {{ macros.setting_radio_with_value('auto_download_mode', '다운로드 모드', [['blacklist', '블랙리스트'], ['whitelist', '화이트리스트']], value=arg['auto_download_mode']) }}
+    <div class="form-group row">
+      <label class="col-sm-3 col-form-label">현재 모드 안내</label>
+      <div class="col-sm-9">
+        <input id="current_filter_mode_text" type="text" class="form-control" value="" readonly>
+        <small class="form-text text-muted">블랙리스트 모드는 일치 키워드를 제외하고, 화이트리스트 모드는 일치 키워드만 다운로드합니다.</small>
+      </div>
+    </div>
+  {{ macros.m_tab_content_end() }}
+
+  {{ macros.m_tab_content_start('blacklist', false) }}
+    {{ macros.setting_input_textarea('auto_blacklist_program', '제외 프로그램 키워드', value=arg['auto_blacklist_program'], desc=['쉼표(,) 또는 줄바꿈으로 구분']) }}
+    {{ macros.setting_input_textarea('auto_blacklist_episode', '제외 에피소드 키워드', value=arg['auto_blacklist_episode'], desc=['쉼표(,) 또는 줄바꿈으로 구분']) }}
+  {{ macros.m_tab_content_end() }}
+
+  {{ macros.m_tab_content_start('whitelist', false) }}
+    {{ macros.setting_input_textarea('auto_whitelist_program', '포함 프로그램 키워드', value=arg['auto_whitelist_program'], desc=['쉼표(,) 또는 줄바꿈으로 구분']) }}
+    {{ macros.setting_input_textarea('auto_whitelist_episode', '포함 에피소드 키워드', value=arg['auto_whitelist_episode'], desc=['쉼표(,) 또는 줄바꿈으로 구분']) }}
+  {{ macros.m_tab_content_end() }}
+
+  {{ macros.m_tab_content_start('handling', false) }}
+    {{ macros.setting_checkbox('auto_allow_preview', '프리뷰(180초) 허용', value=arg['auto_allow_preview'], desc='Off : end=180 프리뷰 URL 차단') }}
+    {{ macros.setting_checkbox('auto_download_subtitle', '자막 다운로드', value=arg['auto_download_subtitle']) }}
+    {{ macros.setting_input_int('auto_max_retry', '재시도 횟수', value=arg['auto_max_retry'], min='1') }}
+    {{ macros.setting_checkbox('auto_retry_failed', '스케줄 시 실패 항목 재시도', value=arg['auto_retry_failed']) }}
+  {{ macros.m_tab_content_end() }}
+
+  {{ macros.m_tab_content_start('schedule', false) }}
+    {{ macros.setting_input_int('auto_scan_program_limit', '프로그램 수집 최대 개수', value=arg['auto_scan_program_limit'], min='1') }}
+    {{ macros.setting_input_int('auto_scan_episode_limit', '프로그램별 수집 에피소드 수', value=arg['auto_scan_episode_limit'], min='1') }}
+    {{ macros.global_setting_scheduler_button(arg['is_include'], arg['is_running']) }}
+    {{ macros.setting_input_text('auto_interval', '스케줄링 실행 정보', value=arg['auto_interval'], col='3', desc=['Interval(minute 단위) 또는 Cron 설정']) }}
+    {{ macros.setting_checkbox('auto_auto_start', '시작시 자동실행', value=arg['auto_auto_start']) }}
+  {{ macros.m_tab_content_end() }}
+</div>
+</form>
+
+<script type="text/javascript">
+function update_filter_mode_text() {
+  const currentMode = ($("input[name='auto_download_mode']:checked").val() || 'blacklist');
+  const text = (currentMode === 'whitelist')
+    ? '화이트리스트 모드 (일치 키워드만 다운로드)'
+    : '블랙리스트 모드 (일치 키워드 제외)';
+  $('#current_filter_mode_text').val(text);
+}
+
+$(document).ready(function(){
+  update_filter_mode_text();
+});
+
+$("body").on('change', "input[name='auto_download_mode']", function(){
+  update_filter_mode_text();
+});
+</script>
+
+{% endblock %}

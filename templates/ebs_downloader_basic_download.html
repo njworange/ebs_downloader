@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['analyze_url_btn', '분석'], ['download_selected_btn', '선택 다운로드 추가'], ['select_all_btn', '전체 선택'], ['select_none_btn', '전체 해제']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+
+<div class="form-group row">
+  <label class="col-sm-3 col-form-label">URL or Code</label>
+  <div class="col-sm-9">
+    <input id="analyze_input" type="text" class="form-control" placeholder="https://anikids.ebs.co.kr/anikids/program/show/BA0AA000000000020" value="{{ arg.get('url_or_code', '') }}">
+    <small class="form-text text-muted">프로그램 URL(<code>/anikids/program/show/...</code>) 또는 <code>courseId=...</code> 또는 코스 ID를 입력하세요.</small>
+  </div>
+</div>
+
+<div class="form-group row">
+  <label class="col-sm-3 col-form-label">시즌(선택)</label>
+  <div class="col-sm-9">
+    <select id="season_select" class="form-control">
+      <option value="">자동</option>
+    </select>
+    <small class="form-text text-muted">분석 후 시즌을 선택하고 다시 <code>분석</code>하면 해당 시즌 목록을 가져옵니다.</small>
+  </div>
+</div>
+
+<div class="form-group row">
+  <label class="col-sm-3 col-form-label">프로그램</label>
+  <div class="col-sm-9">
+    <input id="program_title" type="text" class="form-control" value="" readonly>
+  </div>
+</div>
+
+<hr/>
+
+<div id="analyze_result"></div>
+
+<script type="text/javascript">
+let currentAnalyze = null;
+
+function qualityLabelFromCode(code) {
+  switch ((code || '').toUpperCase()) {
+    case 'M50': return '1080p';
+    case 'M20': return '720p';
+    case 'M10': return '480p';
+    case 'M05': return '360p';
+    default: return (code || '').toString();
+  }
+}
+
+function yymmddFromReleaseDate(releaseDate) {
+  const digits = (releaseDate || '').toString().replace(/[^0-9]/g, '');
+  if (digits.length >= 8) return digits.slice(2, 8);
+  const m = (releaseDate || '').match(/(\d{4})\.(\d{2})\.(\d{2})/);
+  if (!m) return '000000';
+  return m[1].slice(2) + m[2] + m[3];
+}
+
+function epNoToE(epNo) {
+  const s = (epNo || '').toString().trim();
+  if (s === '') return 'E00';
+  const n = parseInt(s.replace(/[^0-9]/g, ''), 10);
+  if (!isNaN(n)) return 'E' + String(n).padStart(2, '0');
+  return 'E' + s;
+}
+
+function escapeHtml(text) {
+  return (text || '').toString()
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('\"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function renderAnalyze(data) {
+  currentAnalyze = data || null;
+
+  const programTitle = (data && data.program_title) ? data.program_title : '';
+  $('#program_title').val(programTitle);
+
+  const seasons = (data && data.seasons) ? data.seasons : [];
+  const selectedStep = (data && data.step_id) ? data.step_id : '';
+  let seasonOptions = '<option value=\"\">자동</option>';
+  for (const s of seasons) {
+    const sid = (s.step_id || '');
+    const name = (s.name || sid);
+    const sel = (sid === selectedStep) ? ' selected' : '';
+    seasonOptions += `<option value=\"${escapeHtml(sid)}\"${sel}>${escapeHtml(name)}</option>`;
+  }
+  $('#season_select').html(seasonOptions);
+
+  const episodes = (data && data.episodes) ? data.episodes : [];
+  const qLabel = qualityLabelFromCode("{{ arg['basic_quality'] }}");
+
+  let html = '';
+  html += `<div class=\"mb-2\"><strong>에피소드 ${episodes.length}개</strong></div>`;
+  html += '<div class=\"table-responsive\">';
+  html += '<table class=\"table table-sm\">';
+  html += '<thead><tr>';
+  html += '<th style=\"width:30px;\"></th>';
+  html += '<th style=\"width:140px;\">썸네일</th>';
+  html += '<th>정보</th>';
+  html += '<th style=\"width:160px;\">동작</th>';
+  html += '</tr></thead><tbody>';
+
+  for (let i = 0; i < episodes.length; i++) {
+    const ep = episodes[i];
+    const thumb = ep.thumbnail || '';
+    const epTitle = (ep.episode_title || '').toString();
+    const epNo = (ep.episode_no || '').toString();
+    const rd = (ep.release_date || '').toString();
+    const filename = `${programTitle}.${epNoToE(epNo)}.${yymmddFromReleaseDate(rd)}.${qLabel}-EBS.mp4`;
+    html += '<tr>';
+    html += `<td><input type=\"checkbox\" class=\"ep_check\" data-index=\"${i}\"></td>`;
+    html += `<td>${thumb ? `<img src=\"${escapeHtml(thumb)}\" style=\"max-width:120px; max-height:70px;\"/>` : '-'}</td>`;
+    html += '<td>';
+    html += `<div><strong>${escapeHtml(epNo ? (epNo + '회 ') : '')}${escapeHtml(epTitle)}</strong></div>`;
+    html += `<div class=\"text-muted\" style=\"font-size:0.9em;\">방영일: ${escapeHtml(rd || '-')}</div>`;
+    html += `<div class=\"text-muted\" style=\"font-size:0.9em;\">예상 파일명: ${escapeHtml(filename)}</div>`;
+    html += '</td>';
+    html += `<td>${j_button('download_one_btn', '다운로드 추가', {'idx': i}, 'success')}</td>`;
+    html += '</tr>';
+  }
+
+  html += '</tbody></table></div>';
+  if (episodes.length === 0) html = '<h4>에피소드 목록이 없습니다.</h4>';
+  $('#analyze_result').html(html);
+}
+
+function analyze() {
+  const input = ($('#analyze_input').val() || '').trim();
+  const stepId = ($('#season_select').val() || '').trim();
+  if (input === '') {
+    notify('URL 또는 코드를 입력하세요.', 'warning');
+    return;
+  }
+  globalSendCommand('analyze_url', input, stepId, null, function(ret){
+    if (ret.ret === 'success') {
+      notify(ret.msg || '분석 완료', 'success');
+      renderAnalyze(ret.data);
+    } else {
+      notify(ret.msg || '분석 실패', 'warning');
+      if (ret.data) renderAnalyze(ret.data);
+    }
+  });
+}
+
+function downloadEpisodes(episodes) {
+  globalSendCommand('download_manual', JSON.stringify(episodes || []), null, null, function(ret){
+    if (ret.ret === 'success') {
+      notify(ret.msg || '큐에 추가했습니다.', 'success');
+    } else {
+      notify(ret.msg || '추가 실패', 'warning');
+    }
+  });
+}
+
+function resetAnalyzeUi() {
+  currentAnalyze = null;
+  $('#program_title').val('');
+  $('#season_select').html('<option value=\"\">자동</option>');
+  $('#analyze_result').html('');
+}
+
+$('body').on('click', '#analyze_url_btn', function(e){
+  e.preventDefault();
+  analyze();
+});
+
+// URL/코드 변경 시 이전 분석 결과 초기화
+$('body').on('input', '#analyze_input', function(){
+  resetAnalyzeUi();
+});
+
+$('body').on('click', '#download_selected_btn', function(e){
+  e.preventDefault();
+  if (!currentAnalyze || !currentAnalyze.episodes) {
+    notify('먼저 분석을 실행하세요.', 'warning');
+    return;
+  }
+  const indices = $('.ep_check:checked').map(function(){ return parseInt($(this).data('index'), 10); }).get();
+  if (!indices.length) {
+    notify('선택된 항목이 없습니다.', 'warning');
+    return;
+  }
+  const episodes = indices.map(i => currentAnalyze.episodes[i]).filter(x => x);
+  downloadEpisodes(episodes);
+});
+
+$('body').on('click', '#select_all_btn', function(e){
+  e.preventDefault();
+  $('.ep_check').prop('checked', true);
+});
+
+$('body').on('click', '#select_none_btn', function(e){
+  e.preventDefault();
+  $('.ep_check').prop('checked', false);
+});
+
+$('body').on('click', '#download_one_btn', function(e){
+  e.preventDefault();
+  const idx = parseInt($(this).data('idx'), 10);
+  if (!currentAnalyze || !currentAnalyze.episodes || !currentAnalyze.episodes[idx]) return;
+  downloadEpisodes([currentAnalyze.episodes[idx]]);
+});
+</script>
+
+{% endblock %}

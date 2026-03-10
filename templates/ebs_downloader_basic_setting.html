@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+<form id="setting">
+<nav>
+  {{ macros.m_tab_head_start() }}
+    {{ macros.m_tab_head('basic', '기본', true) }}
+    {{ macros.m_tab_head('auth', '로그인 & 쿠키', false) }}
+  {{ macros.m_tab_head_end() }}
+</nav>
+
+<div class="tab-content" id="nav-tabContent">
+  {{ macros.m_tab_content_start('basic', true) }}
+    {{ macros.setting_input_text('basic_save_path', '저장 폴더', value=arg['basic_save_path'], desc=['절대경로 혹은 {PATH_DATA}/download 와 같은 데이터 폴더 기준 상대 경로']) }}
+    {{ macros.setting_select('basic_quality', '기본 화질', [['M50', '1080p'], ['M20', '720p'], ['M10', '480p'], ['M05', '360p']], col='3', value=arg['basic_quality']) }}
+    {{ macros.setting_input_text('basic_user_agent', '사용자 에이전트', value=arg['basic_user_agent'], desc=['특수한 경우가 아니면 기본값 유지 권장']) }}
+  {{ macros.m_tab_content_end() }}
+
+  {{ macros.m_tab_content_start('auth', false) }}
+    <div class="form-group row">
+      <label class="col-sm-3 col-form-label">현재 쿠키 상태</label>
+      <div class="col-sm-9">
+        <textarea id="basic_cookie" name="basic_cookie" class="form-control" rows="3" readonly style="background-color: #f8f9fa; font-size: 0.85em;">{{ arg['basic_cookie'] }}</textarea>
+        <small class="form-text text-muted">자동 로그인으로 관리되는 쿠키입니다. (읽기 전용)</small>
+      </div>
+    </div>
+    {{ macros.setting_checkbox('basic_cookie_refresh', '쿠키 만료 시 자동 갱신', value=arg['basic_cookie_refresh'], desc=['On: 저장된 계정으로 자동 재로그인 후 쿠키 갱신', '자동 갱신을 사용하려면 아래 버튼으로 1회 로그인하여 계정을 저장하세요']) }}
+    <div class="form-group row">
+      <label class="col-sm-3 col-form-label">저장된 자동 갱신 계정</label>
+      <div class="col-sm-9">
+        <input id="saved_account_id" type="text" class="form-control" value="{{ arg.get('basic_account_id', '') if arg.get('basic_account_id', '') else '없음' }}" readonly>
+        <small class="form-text text-muted">계정으로 쿠키 자동 가져오기 성공 시 자동 저장됩니다.</small>
+      </div>
+    </div>
+    <div class="form-group row">
+      <label class="col-sm-3 col-form-label">EBS 아이디(임시 입력)</label>
+      <div class="col-sm-9">
+        <input id="temp_login_id" type="text" class="form-control" placeholder="EBS 로그인 아이디" autocomplete="off">
+        <small class="form-text text-muted">저장되지 않으며 버튼 동작 시에만 사용됩니다.</small>
+      </div>
+    </div>
+    <div class="form-group row">
+      <label class="col-sm-3 col-form-label">EBS 비밀번호(임시 입력)</label>
+      <div class="col-sm-9">
+        <input id="temp_login_pw" type="password" class="form-control" placeholder="EBS 로그인 비밀번호" autocomplete="new-password">
+        <small class="form-text text-muted">성공 시 쿠키와 자동 갱신용 계정(ID/PW)이 저장됩니다.</small>
+      </div>
+    </div>
+    {{ macros.m_button_group([['login_with_account_btn', '계정으로 쿠키 자동 가져오기'], ['refresh_cookie_saved_btn', '저장된 계정으로 쿠키 갱신']]) }}
+  {{ macros.m_tab_content_end() }}
+</div>
+</form>
+
+<script type="text/javascript">
+$("body").on('click', '#login_with_account_btn', function(e){
+  e.preventDefault();
+  const userId = ($('#temp_login_id').val() || '').trim();
+  const password = ($('#temp_login_pw').val() || '');
+  if (userId === '' || password === '') {
+    notify('아이디와 비밀번호를 모두 입력하세요.', 'warning');
+    return;
+  }
+  globalSendCommand('login_with_account', userId, password, null, function(ret){
+    $('#temp_login_pw').val('');
+    if (ret.ret === 'success') {
+      notify(ret.msg || '쿠키를 저장했습니다.', 'success');
+      location.reload();
+    } else {
+      notify(ret.msg || '로그인에 실패했습니다.', 'warning');
+    }
+  });
+});
+
+$("body").on('click', '#refresh_cookie_saved_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('refresh_cookie_saved', null, null, null, function(ret){
+    if (ret.ret === 'success') {
+      notify(ret.msg || '쿠키를 갱신했습니다.', 'success');
+      location.reload();
+    } else {
+      notify(ret.msg || '쿠키 갱신에 실패했습니다.', 'warning');
+    }
+  });
+});
+</script>
+
+{% endblock %}

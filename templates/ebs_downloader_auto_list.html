@@ -1,0 +1,353 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['collect_now_btn', '수집+큐 추가'], ['retry_failed_btn', '실패 재시도'], ['queue_status_btn', '큐 상태'], ['queue_reset_btn', '큐 초기화']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+
+<form id="form_search" class="form-inline" style="text-align:left" onsubmit="return false;">
+  <div class="container-fluid">
+    <div class="row show-grid">
+      <span class="col-md-4">
+        <select id="order" name="order" class="form-control form-control-sm">
+          <option value="desc">최근순</option>
+          <option value="asc">오래된순</option>
+        </select>
+        <select id="option1" name="option1" class="form-control form-control-sm">
+          <option value="all">전체</option>
+          <option value="completed">완료</option>
+          <option value="waiting">대기중</option>
+          <option value="downloading">다운로드중</option>
+          <option value="failed">실패</option>
+          <option value="filtered">필터 제외</option>
+          <option value="preview">프리뷰 차단</option>
+        </select>
+      </span>
+      <span class="col-md-8">
+        <input id="keyword" name="keyword" class="form-control form-control-sm w-50" type="text" placeholder="프로그램/에피소드/코스 ID" aria-label="Search">
+        {{ macros.m_button_group([['globalSearchSearchBtn', '검색'], ['globalSearchResetBtn', '리셋']])}}
+      </span>
+    </div>
+  </div>
+</form>
+<div id='page1'></div>
+<div id="list"></div>
+<div id='page2'></div>
+
+<!-- 큐 상태 모달 -->
+<div class="modal fade" id="queueModal" tabindex="-1" role="dialog" aria-hidden="true">
+  <div class="modal-dialog modal-lg" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">다운로드 큐 상태</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p id="queueSummary" style="font-weight:bold;"></p>
+        <table class="table table-sm table-bordered" id="queueTable" style="font-size:0.9em;">
+          <thead class="thead-light">
+            <tr>
+              <th style="width:60px;">#ID</th>
+              <th>프로그램</th>
+              <th>회차</th>
+              <th>에피소드 제목</th>
+              <th style="width:90px;">상태</th>
+            </tr>
+          </thead>
+          <tbody id="queueTableBody"></tbody>
+        </table>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-dismiss="modal">닫기</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- JSON 모달 -->
+<div class="modal fade" id="jsonModal" tabindex="-1" role="dialog" aria-hidden="true">
+  <div class="modal-dialog modal-lg" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">항목 상세 (JSON)</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <pre id="jsonModalBody" style="max-height:500px; overflow:auto; font-size:0.85em; white-space:pre-wrap; word-break:break-all;"></pre>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-dismiss="modal">닫기</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="text/javascript">
+var last_list_option = "{{arg['ebs_downloader_auto_last_list_option']}}";
+var listData = [];
+
+$(document).ready(function(){
+  let tmp = last_list_option.split('|');
+  if (tmp.length == 5) {
+    $("#order").val(tmp[0]);
+    $("#keyword").val(tmp[2]);
+    $("#option1").val(tmp[3]);
+    globalRequestSearch(tmp[1]);
+  } else {
+    globalRequestSearch('1');
+  }
+});
+
+// ── 상단 버튼 ──
+
+$("body").on('click', '#collect_now_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('collect_now', null, null, null, function(ret){
+    notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
+    globalRequestSearch(current_page || 1);
+  });
+});
+
+$("body").on('click', '#retry_failed_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('retry_failed', null, null, null, function(ret){
+    notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
+    globalRequestSearch(current_page || 1);
+  });
+});
+
+$("body").on('click', '#queue_status_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('queue_status', null, null, null, function(ret){
+    $('#queueSummary').text(ret.msg || '큐 상태를 가져올 수 없습니다.');
+    let tbody = '';
+    let items = ret.data || [];
+    if (items.length === 0) {
+      tbody = '<tr><td colspan="5" style="text-align:center; color:#999;">큐가 비어 있습니다.</td></tr>';
+    } else {
+      const statusText = {
+        'PENDING': '처리대기', 'WAITING': '대기중', 'DOWNLOADING': '다운로드중',
+        'COMPLETED': '완료', 'FAILED': '실패', 'GIVEUP': '재시도 초과',
+        'FILTERED': '필터 제외', 'PREVIEW_BLOCKED': '프리뷰 차단'
+      };
+      for (let item of items) {
+        let st = statusText[item.status] || item.status || '-';
+        if (item.status === 'DOWNLOADING') st = '<span style="color:#007bff;font-weight:bold;">' + st + '</span>';
+        else if (item.status === 'WAITING') st = '<span style="color:#007bff;">' + st + '</span>';
+        tbody += '<tr>';
+        tbody += '<td>' + item.id + '</td>';
+        tbody += '<td>' + escapeHtml(item.program_title) + '</td>';
+        tbody += '<td>' + escapeHtml(item.episode_no) + '</td>';
+        tbody += '<td>' + escapeHtml(item.episode_title) + '</td>';
+        tbody += '<td>' + st + '</td>';
+        tbody += '</tr>';
+      }
+    }
+    $('#queueTableBody').html(tbody);
+    $('#queueModal').modal('show');
+  });
+});
+
+$("body").on('click', '#queue_reset_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('queue_reset', null, null, null, function(ret){
+    notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
+    globalRequestSearch(current_page || 1);
+  });
+});
+
+// ── 항목별 동작 버튼 ──
+
+$("body").on('click', '#reset_status_btn', function(e){
+  e.preventDefault();
+  let id = $(this).data('id');
+  globalSendCommand('reset_status', id, null, null, function(ret){
+    notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
+    globalRequestSearch(current_page || 1);
+  });
+});
+
+$("body").on('click', '#delete_btn', function(e){
+  e.preventDefault();
+  let id = $(this).data('id');
+  globalConfirmModal('항목 삭제', 'ID: ' + id + ' 항목을 삭제할까요?', function() {
+    globalSendCommand('delete', id, null, null, function(ret){
+      notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
+      globalRequestSearch(current_page || 1);
+    });
+  });
+});
+
+$("body").on('click', '#add_black_program_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('add_condition', 'auto_blacklist_program', $(this).data('program'), null, function(ret){
+    notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
+  });
+});
+
+$("body").on('click', '#add_white_program_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('add_condition', 'auto_whitelist_program', $(this).data('program'), null, function(ret){
+    notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
+  });
+});
+
+// ── 확장 버튼: 검색 ──
+
+$("body").on('click', '#search_episode_btn', function(e){
+  e.preventDefault();
+  let title = $(this).data('title') || '';
+  if (title) {
+    $('#keyword').val(title);
+    globalRequestSearch(1);
+  }
+});
+
+$("body").on('click', '#search_program_btn', function(e){
+  e.preventDefault();
+  let title = $(this).data('title') || '';
+  if (title) {
+    $('#keyword').val(title);
+    globalRequestSearch(1);
+  }
+});
+
+// ── 확장 버튼: JSON ──
+
+$("body").on('click', '#show_json_btn', function(e){
+  e.preventDefault();
+  let idx = $(this).data('idx');
+  let item = listData[idx];
+  if (!item) return;
+  $('#jsonModalBody').text(JSON.stringify(item, null, 2));
+  $('#jsonModal').modal('show');
+});
+
+// ── 확장 버튼: 다운로드 ──
+
+$("body").on('click', '#download_item_btn', function(e){
+  e.preventDefault();
+  let id = $(this).data('id');
+  globalSendCommand('download_item', id, null, null, function(ret){
+    notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
+    globalRequestSearch(current_page || 1);
+  });
+});
+
+// ── 확장 버튼: 갱신 ──
+
+$("body").on('click', '#refresh_episode_btn', function(e){
+  e.preventDefault();
+  let id = $(this).data('id');
+  globalSendCommand('refresh_episode', id, null, null, function(ret){
+    notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
+    globalRequestSearch(current_page || 1);
+  });
+});
+
+// ── 목록 렌더링 ──
+
+function escapeHtml(text) {
+  return (text || '').toString()
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function make_list(data) {
+  listData = data || [];
+  let str = '';
+  for (let i in data) {
+    let item = data[i];
+    str += j_row_start();
+
+    // 썸네일 (Wavve 스타일: col-3, img-fluid)
+    let thumb = '';
+    if (item.thumbnail) {
+      thumb = '<img src="' + escapeHtml(item.thumbnail) + '" class="img-fluid" loading="lazy">';
+    } else {
+      thumb = '<div style="width:100%;padding-top:56%;background:#f0f0f0;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:0.85em;border-radius:4px;position:relative;"><span style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);">No Image</span></div>';
+    }
+    str += j_col(3, thumb);
+
+    // 메타 정보 (Wavve 스타일)
+    let tmp = '<strong>' + escapeHtml(item.program_title || item.course_id) + '  ';
+    if (item.episode_no) {
+      tmp += escapeHtml(item.episode_no) + '회';
+    }
+    tmp += '</strong>';
+    if (item.release_date) {
+      tmp += ' (' + escapeHtml(item.release_date) + ')';
+    }
+    tmp += ' / ' + (item.quality_code || '-');
+    tmp += '<br>';
+
+    tmp += '<strong>파일명</strong> : ' + escapeHtml(item.filepath || '-');
+    tmp += '<br>';
+
+    tmp += '<strong>에피소드 번호 / 제목</strong> : ' + escapeHtml(item.episode_no || '-') + ' / ' + escapeHtml(item.episode_title || '-');
+    tmp += '<br>';
+
+    // 상태
+    tmp += '<strong>상태</strong> : ';
+    if (item.completed) {
+      tmp += '<span style="color:blue">다운로드 완료</span>';
+    } else {
+      switch (item.status) {
+        case 'PENDING':       tmp += '<span style="color:blue">처리대기</span>'; break;
+        case 'WAITING':       tmp += '<span style="color:blue">대기중</span>'; break;
+        case 'DOWNLOADING':   tmp += '<span style="color:blue">다운로드중</span>'; break;
+        case 'FAILED':        tmp += '<span style="color:red">실패</span>'; break;
+        case 'GIVEUP':        tmp += '<span style="color:red">재시도 초과</span>'; break;
+        case 'FILTERED':      tmp += '<span style="color:red">필터 제외</span>'; break;
+        case 'PREVIEW_BLOCKED': tmp += '<span style="color:red">프리뷰 차단</span>'; break;
+        default:              tmp += (item.status || '-'); break;
+      }
+    }
+    if (item.message) {
+      tmp += ' - ' + escapeHtml(item.message);
+    }
+    tmp += '<br>';
+
+    tmp += '<strong>재시도</strong> : ' + (item.retry || 0);
+    tmp += '<br>';
+
+    if (item.filesize) {
+      tmp += '<strong>파일크기</strong> : ' + (item.filesize / 1048576).toFixed(1) + ' MB&nbsp;&nbsp;';
+    }
+    if (item.completed_time) {
+      tmp += '<strong>완료시간</strong> : ' + escapeHtml(item.completed_time);
+    }
+    if (item.filesize || item.completed_time) {
+      tmp += '<br>';
+    }
+
+    // 버튼
+    let actions = '';
+    actions += j_button('download_item_btn', '다운로드', {'id': item.id}, 'primary', false);
+    actions += j_button('search_episode_btn', '에피소드 검색', {'title': item.episode_title || ''}, 'dark');
+    actions += j_button('search_program_btn', '프로그램 검색', {'title': item.program_title || ''}, 'dark');
+    actions += j_button('show_json_btn', 'JSON', {'idx': i}, 'dark');
+    actions += j_button('refresh_episode_btn', '갱신', {'id': item.id}, 'dark');
+    actions += j_button('add_black_program_btn', '제외 프로그램', {'program': item.program_title || ''}, 'dark');
+    actions += j_button('add_white_program_btn', '포함 프로그램', {'program': item.program_title || ''}, 'success', false);
+    actions += j_button('reset_status_btn', '초기화', {'id': item.id}, 'warning', false);
+    actions += j_button('delete_btn', '삭제', {'id': item.id}, 'danger', false);
+    tmp += j_button_group(actions);
+
+    str += j_col(9, tmp);
+    str += j_row_end();
+    if (i != data.length - 1) str += j_hr(0);
+  }
+  if (str === '') str = '<h4>목록이 없습니다.</h4>';
+  $("#list").html(str);
+}
+</script>
+
+{% endblock %}
