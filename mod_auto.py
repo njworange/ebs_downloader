@@ -55,6 +55,35 @@ def parse_keywords(value: str) -> list[str]:
     return result
 
 
+def parse_release_date(value: str) -> datetime.date | None:
+    value = (value or "").strip()
+    if not value:
+        return None
+    match = re.search(r"(\d{4})\.(\d{2})\.(\d{2})", value)
+    if not match:
+        digits = re.sub(r"\D", "", value)
+        if len(digits) >= 8:
+            try:
+                return datetime.date(int(digits[:4]), int(digits[4:6]), int(digits[6:8]))
+            except ValueError:
+                return None
+        return None
+    try:
+        return datetime.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def parse_collect_since(value: str) -> datetime.date | None:
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        return datetime.date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
 class ModuleAuto(PluginModuleBase):
     download_queue = None
     download_thread = None
@@ -68,6 +97,7 @@ class ModuleAuto(PluginModuleBase):
             f"{P.package_name}_{self.name}_last_list_option": "",
             f"{self.name}_interval": "30",
             f"{self.name}_auto_start": "False",
+            f"{self.name}_collect_since": "",
             f"{self.name}_download_mode": "blacklist",
             f"{self.name}_blacklist_program": "",
             f"{self.name}_blacklist_episode": "",
@@ -210,6 +240,23 @@ class ModuleAuto(PluginModuleBase):
         except Exception:
             pass  # 이미 존재하면 무시
 
+        try:
+            _engine = F.db.engine if hasattr(F.db, "engine") else F.db.get_engine()
+            with _engine.connect() as _conn:
+                _conn.execute(text(
+                    f"ALTER TABLE {ModelEbsEpisode.__tablename__} ADD COLUMN display_title VARCHAR(255)"
+                ))
+                _conn.commit()
+            P.logger.info("[ebs_downloader] DB 마이그레이션: display_title 컬럼 추가 완료")
+        except Exception:
+            pass  # 이미 존재하면 무시
+
+        collect_since = (P.ModelSetting.get(f"{self.name}_collect_since") or "").strip()
+        if not collect_since:
+            collect_since = datetime.date.today().isoformat()
+            P.ModelSetting.set(f"{self.name}_collect_since", collect_since)
+            P.logger.info("[ebs_downloader] 자동 수집 기준일 초기화: %s", collect_since)
+
         if not ModuleAuto.download_queue:
             ModuleAuto.download_queue = queue.Queue()
         if not ModuleAuto.download_thread:
@@ -287,8 +334,10 @@ class ModuleAuto(PluginModuleBase):
         scanned_programs = 0
         empty_programs = 0
         no_new_programs = 0
+        skipped_old_programs = 0
         program_limit = max(P.ModelSetting.get_int(f"{self.name}_scan_program_limit"), 0)
         episode_limit = max(P.ModelSetting.get_int(f"{self.name}_scan_episode_limit"), 1)
+        collect_since = parse_collect_since(P.ModelSetting.get(f"{self.name}_collect_since"))
         try:
             course_ids = client.collect_program_ids(limit=program_limit)
         except Exception:
@@ -307,6 +356,7 @@ class ModuleAuto(PluginModuleBase):
                 program_title, episodes, debug = client.collect_program_episodes_resilient(course_id)
                 episodes = episodes[:episode_limit]
                 canonical_title = (debug.get("program_title") or program_title or course_id).strip()
+                display_title = (debug.get("display_title") or program_title or canonical_title).strip()
             except Exception:
                 P.logger.exception("에피소드 수집 실패: course_id=%s", course_id)
                 continue
@@ -322,6 +372,26 @@ class ModuleAuto(PluginModuleBase):
                 )
                 continue
 
+            if collect_since is not None:
+                filtered_episodes = []
+                skipped_old_count = 0
+                for episode in episodes:
+                    episode_date = parse_release_date(episode.release_date)
+                    if (episode_date is not None) and (episode_date < collect_since):
+                        skipped_old_count += 1
+                        break
+                    filtered_episodes.append(episode)
+                if skipped_old_count > 0:
+                    skipped_old_programs += 1
+                episodes = filtered_episodes
+                if not episodes:
+                    P.logger.debug(
+                        "프로그램 '%s': 기준일(%s) 이전 에피소드만 있어 수집 건너뜀",
+                        canonical_title,
+                        collect_since.isoformat(),
+                    )
+                    continue
+
             new_for_program = 0
             for episode in episodes:
                 existing = ModelEbsEpisode.get_by_keys(
@@ -334,6 +404,7 @@ class ModuleAuto(PluginModuleBase):
                 item = ModelEbsEpisode(episode.course_id, episode.lect_id, episode.step_id)
                 item.set_info(
                     program_title=canonical_title,
+                    display_title=display_title,
                     episode_no=episode.episode_no,
                     episode_title=episode.episode_title,
                     release_date=episode.release_date,
@@ -358,11 +429,13 @@ class ModuleAuto(PluginModuleBase):
                 )
                 no_new_programs += 1
         P.logger.debug(
-            "수집 요약 - scanned=%d empty=%d no_new=%d created=%d",
+            "수집 요약 - scanned=%d empty=%d old_only=%d no_new=%d created=%d since=%s",
             scanned_programs,
             empty_programs,
+            skipped_old_programs,
             no_new_programs,
             created_count,
+            collect_since.isoformat() if collect_since else "",
         )
         return created_count
 
@@ -497,7 +570,7 @@ class ModuleAuto(PluginModuleBase):
                 return f"E{int(m.group(0)):02d}"
             return f"E{ep_no}"
 
-        title = (item.program_title or item.course_id or "EBS").strip()
+        title = (item.display_title or item.program_title or item.course_id or "EBS").strip()
         ep = e_part(item.episode_no)
         date = yymmdd(item.release_date)
         q = quality_label(quality_code)
@@ -692,6 +765,7 @@ class ModelEbsEpisode(ModelBase):
     release_date = F.db.Column(F.db.String(32))
     show_url = F.db.Column(F.db.String(512))
     thumbnail = F.db.Column(F.db.String(512))
+    display_title = F.db.Column(F.db.String(255))
 
     quality_code = F.db.Column(F.db.String(32))
     play_url = F.db.Column(F.db.Text)
@@ -721,6 +795,7 @@ class ModelEbsEpisode(ModelBase):
         self.is_login = "N"
         self.buy_state = ""
         self.thumbnail = ""
+        self.display_title = ""
 
     def set_info(
         self,
@@ -730,8 +805,10 @@ class ModelEbsEpisode(ModelBase):
         release_date: str,
         show_url: str,
         thumbnail: str = "",
+        display_title: str = "",
     ) -> None:
         self.program_title = program_title
+        self.display_title = display_title or program_title
         self.episode_no = episode_no
         self.episode_title = episode_title
         self.release_date = release_date

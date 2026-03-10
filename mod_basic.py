@@ -194,6 +194,7 @@ class ModuleBasic(PluginModuleBase):
 
                     item.set_info(
                         program_title=(ep.get("program_title") or course_id),
+                        display_title=(ep.get("display_title") or ep.get("program_title") or course_id),
                         episode_no=(ep.get("episode_no") or ""),
                         episode_title=(ep.get("episode_title") or ""),
                         release_date=(ep.get("release_date") or ""),

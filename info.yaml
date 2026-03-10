@@ -1,5 +1,5 @@
 title: "EBS 다운로더"
-version: "0.0.0"
+version: "0.0.1"
 package_name: "ebs_downloader"
 developer: "njworange"
 description: "EBS 애니키즈 다운로더"
