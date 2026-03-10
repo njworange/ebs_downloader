@@ -76,6 +76,7 @@ function renderAnalyze(data) {
   currentAnalyze = data || null;
 
   const programTitle = (data && data.program_title) ? data.program_title : '';
+  const displayTitle = (data && data.display_title) ? data.display_title : programTitle;
   $('#program_title').val(programTitle);
 
   const seasons = (data && data.seasons) ? data.seasons : [];
@@ -109,7 +110,7 @@ function renderAnalyze(data) {
     const epTitle = (ep.episode_title || '').toString();
     const epNo = (ep.episode_no || '').toString();
     const rd = (ep.release_date || '').toString();
-    const filename = `${programTitle}.${epNoToE(epNo)}.${yymmddFromReleaseDate(rd)}.${qLabel}-EBS.mp4`;
+    const filename = `${displayTitle}.${epNoToE(epNo)}.${yymmddFromReleaseDate(rd)}.${qLabel}-EBS.mp4`;
     html += '<tr>';
     html += `<td><input type=\"checkbox\" class=\"ep_check\" data-index=\"${i}\"></td>`;
     html += `<td>${thumb ? `<img src=\"${escapeHtml(thumb)}\" style=\"max-width:120px; max-height:70px;\"/>` : '-'}</td>`;

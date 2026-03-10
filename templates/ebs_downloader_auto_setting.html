@@ -47,6 +47,7 @@
   {{ macros.m_tab_content_start('schedule', false) }}
     {{ macros.setting_input_int('auto_scan_program_limit', '프로그램 수집 최대 개수', value=arg['auto_scan_program_limit'], min='1') }}
     {{ macros.setting_input_int('auto_scan_episode_limit', '프로그램별 수집 에피소드 수', value=arg['auto_scan_episode_limit'], min='1') }}
+    {{ macros.setting_input_text('auto_collect_since', '자동 수집 기준일', value=arg['auto_collect_since'], desc=['이 날짜 이후 방영분만 자동 수집합니다. 형식: YYYY-MM-DD', '비워두면 플러그인 첫 로드시 오늘 날짜로 자동 설정됩니다.']) }}
     {{ macros.global_setting_scheduler_button(arg['is_include'], arg['is_running']) }}
     {{ macros.setting_input_text('auto_interval', '스케줄링 실행 정보', value=arg['auto_interval'], col='3', desc=['Interval(minute 단위) 또는 Cron 설정']) }}
     {{ macros.setting_checkbox('auto_auto_start', '시작시 자동실행', value=arg['auto_auto_start']) }}
