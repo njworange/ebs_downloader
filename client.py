@@ -407,13 +407,13 @@ def _extract_best_form(
     return best[0], best[1], best[2], best[3]
 
 
-def _join_cookie_header(cookiejar: requests.cookies.RequestsCookieJar) -> str:
+def _join_cookie_header(cookiejar: Any) -> str:
     values: dict[str, str] = {}
     for cookie in cookiejar:
         domain = (cookie.domain or "").lstrip(".")
         if not domain.endswith("ebs.co.kr"):
             continue
-        values[cookie.name] = cookie.value
+        values[cookie.name] = cookie.value or ""
     return "; ".join(f"{name}={value}" for name, value in values.items())
 
 
@@ -453,6 +453,129 @@ class AnikidsClient:
             if limit > 0 and len(result) >= limit:
                 break
         return result
+
+    def collect_program_episodes_resilient(
+        self, course_id: str, step_id: str | None = None
+    ) -> tuple[str, list[ProgramEpisode], dict[str, Any]]:
+        requested_step_id = (step_id or "").strip() or None
+        selected_step_id = requested_step_id
+        debug: dict[str, Any] = {
+            "program_status": 0,
+            "program_final": "",
+            "program_len": 0,
+            "vod_status": 0,
+            "vod_final": "",
+            "vod_len": 0,
+            "step_id": requested_step_id or "",
+            "source": "",
+            "seasons": [],
+            "errors": [],
+        }
+
+        program_page_url = f"{BASE_URL}/anikids/program/show/{course_id}"
+        program_text = ""
+        base_program_title = ""
+        seasons: list[dict[str, str]] = []
+        try:
+            resp = self.session.get(
+                program_page_url,
+                timeout=self.timeout,
+                headers={"Referer": BASE_URL},
+                allow_redirects=True,
+            )
+            debug["program_status"] = int(getattr(resp, "status_code", 0) or 0)
+            debug["program_final"] = _safe_url_for_message(getattr(resp, "url", "") or "")
+            program_text = resp.text or ""
+            debug["program_len"] = len(program_text)
+            resp.raise_for_status()
+            base_program_title = _parse_program_title(program_text)
+            seasons, selected_step = _parse_program_seasons(program_text)
+            debug["seasons"] = seasons
+            if not selected_step_id:
+                selected_step_id = selected_step or (seasons[0]["step_id"] if seasons else None)
+            if not selected_step_id:
+                selected_step_id = _pick_step_id(program_text, course_id=course_id)
+        except Exception as e:
+            debug["errors"].append(f"program:{type(e).__name__}:{e}")
+
+        if not selected_step_id:
+            try:
+                probe_url = f"{BASE_URL}/vodCommon/show?siteCd=AK&courseId={course_id}"
+                probe_resp = self.session.get(
+                    probe_url,
+                    timeout=self.timeout,
+                    headers={"Referer": program_page_url},
+                    allow_redirects=True,
+                )
+                debug["vod_status"] = int(getattr(probe_resp, "status_code", 0) or 0)
+                debug["vod_final"] = _safe_url_for_message(getattr(probe_resp, "url", "") or "")
+                probe_text = probe_resp.text or ""
+                debug["vod_len"] = len(probe_text)
+                probe_resp.raise_for_status()
+                if not base_program_title:
+                    base_program_title = _parse_program_title(probe_text)
+                selected_step_id = _pick_step_id(probe_text, course_id=course_id) or selected_step_id
+                if not selected_step_id:
+                    match = re.search(r"stepId=([A-Z0-9]+)", probe_text or "")
+                    if match:
+                        selected_step_id = match.group(1)
+            except Exception as e:
+                debug["errors"].append(f"vod:{type(e).__name__}:{e}")
+
+        base_title = base_program_title or course_id
+        display_title = ""
+        episodes: list[ProgramEpisode] = []
+        source = ""
+
+        try:
+            vod_title, vod_episodes = self.collect_program_episodes(
+                course_id, step_id=selected_step_id
+            )
+            if vod_episodes:
+                base_title = vod_title or base_title
+                episodes = vod_episodes
+                source = "vod"
+        except Exception as e:
+            debug["errors"].append(f"vodlist:{type(e).__name__}:{e}")
+
+        if (not episodes) and selected_step_id:
+            try:
+                ajax_title, ajax_episodes = self.collect_program_episodes_ajax(
+                    course_id, step_id=selected_step_id
+                )
+                if ajax_episodes:
+                    base_title = ajax_title or base_title
+                    episodes = ajax_episodes
+                    source = "ajax"
+            except Exception as e:
+                debug["errors"].append(f"ajax:{type(e).__name__}:{e}")
+
+        if (not episodes) and selected_step_id:
+            try:
+                vod_title, vod_episodes = self.collect_program_episodes(course_id, step_id=None)
+                if vod_episodes:
+                    base_title = vod_title or base_title
+                    episodes = vod_episodes
+                    source = "vod-no-step"
+            except Exception as e:
+                debug["errors"].append(f"vodlist2:{type(e).__name__}:{e}")
+
+        if selected_step_id and seasons:
+            for season in seasons:
+                if season.get("step_id") == selected_step_id:
+                    display_title = season.get("name") or ""
+                    break
+        if (not display_title) and seasons:
+            display_title = seasons[0].get("name") or ""
+        if not display_title:
+            display_title = base_program_title or base_title
+
+        debug["program_title"] = base_program_title or base_title
+        debug["display_title"] = display_title
+        debug["step_id"] = selected_step_id or ""
+        debug["source"] = source
+        debug["episode_count"] = len(episodes)
+        return display_title, episodes, debug
 
     def collect_program_episodes(
         self, course_id: str, step_id: str | None = None
@@ -659,7 +782,7 @@ class AnikidsClient:
                 thumb_match = EPISODE_THUMB_RE.search(block)
 
                 ep_title = _strip_html(title_match.group("title")) if title_match else ""
-                release_date = _strip_html(date_match.group("date")) if date_match else ""
+                release_date = _strip_html(date_match.group("date") or "") if date_match else ""
                 thumbnail = ""
                 if thumb_match:
                     thumbnail = _normalize_url(thumb_match.group("src") or "")
@@ -778,7 +901,10 @@ class AnikidsClient:
             """현재 세션 쿠키를 DEBUG로 출력."""
             cookie_list = []
             for c in session.cookies:
-                cookie_list.append(f"  {c.domain} | {c.name}={c.value[:40]}{'...' if len(c.value) > 40 else ''}")
+                cookie_value = c.value if isinstance(c.value, str) else ""
+                cookie_list.append(
+                    f"  {c.domain} | {c.name}={cookie_value[:40]}{'...' if len(cookie_value) > 40 else ''}"
+                )
             if cookie_list:
                 logger.debug("[LOGIN:%s] 현재 세션 쿠키 (%d개):\n%s", label, len(cookie_list), "\n".join(cookie_list))
             else:
@@ -922,7 +1048,7 @@ class AnikidsClient:
                 logger.debug(
                     "[LOGIN:Step3:%d] 폼 분석: action=%s method=%s names=%s "
                     "has_login=%s is_relay=%s is_sso_action=%s is_sso_page=%s",
-                    loop_idx, _safe_url_for_message(action), method, names,
+                    loop_idx, _safe_url_for_message(action or ""), method, names,
                     has_login_fields, is_relay_form, is_sso_action, is_sso_page,
                 )
 
@@ -977,9 +1103,9 @@ class AnikidsClient:
                         headers=submit_headers,
                     )
                 else:
-                    logger.debug("[LOGIN:Step3:%d] GET %s", loop_idx, action)
+                    logger.debug("[LOGIN:Step3:%d] GET %s", loop_idx, action or "")
                     response = session.get(
-                        action,
+                        action or current_url,
                         params=post_data,
                         timeout=timeout,
                         allow_redirects=True,
@@ -1419,116 +1545,11 @@ class AnikidsClient:
                 user_agent=(user_agent or "Mozilla/5.0"),
                 timeout=timeout,
             )
-            debug: dict[str, Any] = {
-                "program_status": 0,
-                "program_final": "",
-                "program_len": 0,
-                "vod_status": 0,
-                "vod_final": "",
-                "vod_len": 0,
-                "errors": [],
-            }
-
-            program_page_url = f"{BASE_URL}/anikids/program/show/{course_id}"
-            try:
-                resp = public_client.session.get(
-                    program_page_url,
-                    timeout=timeout,
-                    headers={"Referer": BASE_URL},
-                    allow_redirects=True,
-                )
-                debug["program_status"] = int(getattr(resp, "status_code", 0) or 0)
-                debug["program_final"] = _safe_url_for_message(getattr(resp, "url", "") or "")
-                program_text = resp.text or ""
-                debug["program_len"] = len(program_text)
-                resp.raise_for_status()
-            except Exception as e:
-                debug["errors"].append(f"program:{type(e).__name__}:{e}")
-                program_text = ""
-            probe_text = ""
-            base_program_title = _parse_program_title(program_text)
-
-            seasons, selected_step = _parse_program_seasons(program_text)
-            if not step_id:
-                step_id = selected_step or (seasons[0]["step_id"] if seasons else None)
-
-            # Some program pages provide default stepId only in scripts/attributes.
-            if not step_id:
-                step_id = _pick_step_id(program_text, course_id=course_id)
-
-            # Some environments fail to load/parse the program page (seasons). In that case,
-            # try to infer a usable stepId from the vodCommon/show HTML.
-            if not step_id:
-                try:
-                    probe_url = f"{BASE_URL}/vodCommon/show?siteCd=AK&courseId={course_id}"
-                    probe_resp = public_client.session.get(
-                        probe_url,
-                        timeout=timeout,
-                        headers={"Referer": program_page_url},
-                        allow_redirects=True,
-                    )
-                    debug["vod_status"] = int(getattr(probe_resp, "status_code", 0) or 0)
-                    debug["vod_final"] = _safe_url_for_message(getattr(probe_resp, "url", "") or "")
-                    probe_text = probe_resp.text or ""
-                    debug["vod_len"] = len(probe_text)
-                    probe_resp.raise_for_status()
-                    if not base_program_title:
-                        base_program_title = _parse_program_title(probe_text)
-                    step_id = _pick_step_id(probe_text, course_id=course_id) or step_id
-                    if not step_id:
-                        m2 = re.search(r"stepId=([A-Z0-9]+)", probe_text or "")
-                        if m2:
-                            step_id = m2.group(1)
-                except Exception as e:
-                    debug["errors"].append(f"vod:{type(e).__name__}:{e}")
-                    pass
-
-            # Prefer vodCommon/show list first because it contains episode numbers + dates.
-            base_title = base_program_title or course_id
-            episodes: list[ProgramEpisode] = []
-            try:
-                vod_title, vod_episodes = public_client.collect_program_episodes(
-                    course_id, step_id=step_id
-                )
-                if vod_episodes:
-                    base_title = vod_title or base_title
-                    episodes = vod_episodes
-            except Exception as e:
-                debug["errors"].append(f"vodlist:{type(e).__name__}:{e}")
-
-            # Fallback: AJAX list endpoint used by the web UI.
-            if (not episodes) and step_id:
-                try:
-                    ajax_title, ajax_episodes = public_client.collect_program_episodes_ajax(
-                        course_id, step_id=step_id
-                    )
-                    if ajax_episodes:
-                        base_title = ajax_title or base_title
-                        episodes = ajax_episodes
-                except Exception as e:
-                    debug["errors"].append(f"ajax:{type(e).__name__}:{e}")
-
-            # Last resort: try without stepId.
-            if (not episodes) and step_id:
-                try:
-                    vod_title, vod_episodes = public_client.collect_program_episodes(
-                        course_id, step_id=None
-                    )
-                    if vod_episodes:
-                        base_title = vod_title or base_title
-                        episodes = vod_episodes
-                except Exception as e:
-                    debug["errors"].append(f"vodlist2:{type(e).__name__}:{e}")
-            display_title = ""
-            if step_id and seasons:
-                for s in seasons:
-                    if s.get("step_id") == step_id:
-                        display_title = s.get("name") or ""
-                        break
-            if (not display_title) and seasons:
-                display_title = seasons[0].get("name") or ""
-            if not display_title:
-                display_title = base_program_title or base_title
+            display_title, episodes, debug = public_client.collect_program_episodes_resilient(
+                course_id, step_id=step_id
+            )
+            step_id = debug.get("step_id") or step_id
+            seasons = debug.get("seasons") or []
 
             ep_dicts = []
             for ep in episodes:
@@ -1547,15 +1568,23 @@ class AnikidsClient:
                 )
 
             if not ep_dicts:
+                program_text = ""
+                try:
+                    program_text = public_client.get_text(
+                        f"{BASE_URL}/anikids/program/show/{course_id}", referer=BASE_URL
+                    )
+                except Exception:
+                    pass
                 step_candidates = _pick_step_id_candidates(program_text, course_id=course_id)[:5]
+                errors = debug.get("errors") or []
                 extra = (
                     f"stepId={step_id or '없음'}, seasons={len(seasons)}, "
                     f"program_status={debug.get('program_status')}, vod_status={debug.get('vod_status')}"
                 )
                 if step_candidates:
                     extra += f", stepId후보={','.join(step_candidates)}"
-                if debug.get("errors"):
-                    extra += f", errors={' | '.join(str(x) for x in debug.get('errors')[:3])}"
+                if errors:
+                    extra += f", errors={' | '.join(str(x) for x in errors[:3])}"
                 return {
                     "success": False,
                     "message": f"에피소드 목록을 찾지 못했습니다. (courseId={course_id}, {extra})",

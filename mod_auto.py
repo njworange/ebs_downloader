@@ -273,13 +273,20 @@ class ModuleAuto(PluginModuleBase):
             user_agent = "Mozilla/5.0"
         return AnikidsClient(cookie=cookie, user_agent=user_agent)
 
+    def make_public_client(self) -> AnikidsClient:
+        user_agent = (P.ModelSetting.get("basic_user_agent") or "").strip()
+        if not user_agent:
+            user_agent = "Mozilla/5.0"
+        return AnikidsClient(cookie="", user_agent=user_agent)
+
     # ── 에피소드 수집 (incremental) ──
 
     def collect_episodes(self) -> int:
-        client = self.make_client()
-        if client is None:
-            return 0
+        client = self.make_public_client()
         created_count = 0
+        scanned_programs = 0
+        empty_programs = 0
+        no_new_programs = 0
         program_limit = max(P.ModelSetting.get_int(f"{self.name}_scan_program_limit"), 0)
         episode_limit = max(P.ModelSetting.get_int(f"{self.name}_scan_episode_limit"), 1)
         try:
@@ -288,12 +295,31 @@ class ModuleAuto(PluginModuleBase):
             P.logger.exception("코스 ID 수집 실패")
             return 0
 
+        if not course_ids:
+            P.logger.warning("프로그램 목록 수집 결과가 비어 있습니다. 공개 목록 페이지 응답을 확인하세요.")
+            return 0
+
+        P.logger.debug("프로그램 목록 수집 완료: %d개", len(course_ids))
+
         for course_id in course_ids:
+            scanned_programs += 1
             try:
-                program_title, episodes = client.collect_program_episodes(course_id)
+                program_title, episodes, debug = client.collect_program_episodes_resilient(course_id)
                 episodes = episodes[:episode_limit]
+                canonical_title = (debug.get("program_title") or program_title or course_id).strip()
             except Exception:
                 P.logger.exception("에피소드 수집 실패: course_id=%s", course_id)
+                continue
+
+            if not episodes:
+                empty_programs += 1
+                P.logger.warning(
+                    "에피소드 목록이 비어 있습니다: course_id=%s step_id=%s source=%s errors=%s",
+                    course_id,
+                    debug.get("step_id") or "",
+                    debug.get("source") or "",
+                    " | ".join(str(x) for x in debug.get("errors") or []),
+                )
                 continue
 
             new_for_program = 0
@@ -307,7 +333,7 @@ class ModuleAuto(PluginModuleBase):
                     break
                 item = ModelEbsEpisode(episode.course_id, episode.lect_id, episode.step_id)
                 item.set_info(
-                    program_title=program_title,
+                    program_title=canonical_title,
                     episode_no=episode.episode_no,
                     episode_title=episode.episode_title,
                     release_date=episode.release_date,
@@ -320,8 +346,24 @@ class ModuleAuto(PluginModuleBase):
 
             if new_for_program > 0:
                 P.logger.info(
-                    "프로그램 '%s': %d개 신규 에피소드 수집", program_title, new_for_program
+                    "프로그램 '%s': %d개 신규 에피소드 수집", canonical_title, new_for_program
                 )
+            else:
+                P.logger.debug(
+                    "프로그램 '%s': 신규 에피소드 없음 (episodes=%d, step_id=%s, source=%s)",
+                    canonical_title,
+                    len(episodes),
+                    debug.get("step_id") or "",
+                    debug.get("source") or "",
+                )
+                no_new_programs += 1
+        P.logger.debug(
+            "수집 요약 - scanned=%d empty=%d no_new=%d created=%d",
+            scanned_programs,
+            empty_programs,
+            no_new_programs,
+            created_count,
+        )
         return created_count
 
     # ── 필터링 & 큐 관리 ──
