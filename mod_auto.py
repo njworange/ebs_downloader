@@ -255,13 +255,6 @@ class ModuleAuto(PluginModuleBase):
 
     def get_model_engine(self):
         bind_key = getattr(ModelEbsEpisode, "__bind_key__", None)
-        engines = getattr(F.db, "engines", None)
-        if isinstance(engines, dict):
-            if bind_key in engines:
-                return engines[bind_key]
-            if (bind_key is None) and (None in engines):
-                return engines[None]
-
         try:
             return F.db.get_engine(bind=bind_key)
         except TypeError:
@@ -271,47 +264,48 @@ class ModuleAuto(PluginModuleBase):
                 return F.db.get_engine(F.app)
 
     def ensure_schema_columns(self) -> bool:
-        _engine = self.get_model_engine()
-        inspector = inspect(_engine)
         table_name = ModelEbsEpisode.__tablename__
+        with F.app.app_context():
+            _engine = self.get_model_engine()
+            inspector = inspect(_engine)
 
-        try:
-            if not inspector.has_table(table_name):
-                return True
-        except Exception:
-            P.logger.exception("[ebs_downloader] 테이블 존재 여부 확인 실패: %s", table_name)
-            return False
-
-        try:
-            existing_columns = {col.get("name") for col in inspector.get_columns(table_name)}
-        except Exception:
-            P.logger.exception("[ebs_downloader] 컬럼 목록 조회 실패: %s", table_name)
-            return False
-
-        migrations = [
-            ("thumbnail", "VARCHAR(512)"),
-            ("display_title", "VARCHAR(255)"),
-        ]
-        for column_name, column_type in migrations:
-            if column_name in existing_columns:
-                continue
             try:
-                with _engine.begin() as _conn:
-                    _conn.execute(
-                        text(
-                            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
-                        )
-                    )
-                P.logger.info("[ebs_downloader] DB 마이그레이션: %s 컬럼 추가 완료", column_name)
-                existing_columns.add(column_name)
+                if not inspector.has_table(table_name):
+                    return True
             except Exception:
-                P.logger.exception(
-                    "[ebs_downloader] DB 마이그레이션 실패: %s.%s",
-                    table_name,
-                    column_name,
-                )
+                P.logger.exception("[ebs_downloader] 테이블 존재 여부 확인 실패: %s", table_name)
                 return False
-        return True
+
+            try:
+                existing_columns = {col.get("name") for col in inspector.get_columns(table_name)}
+            except Exception:
+                P.logger.exception("[ebs_downloader] 컬럼 목록 조회 실패: %s", table_name)
+                return False
+
+            migrations = [
+                ("thumbnail", "VARCHAR(512)"),
+                ("display_title", "VARCHAR(255)"),
+            ]
+            for column_name, column_type in migrations:
+                if column_name in existing_columns:
+                    continue
+                try:
+                    with _engine.begin() as _conn:
+                        _conn.execute(
+                            text(
+                                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+                            )
+                        )
+                    P.logger.info("[ebs_downloader] DB 마이그레이션: %s 컬럼 추가 완료", column_name)
+                    existing_columns.add(column_name)
+                except Exception:
+                    P.logger.exception(
+                        "[ebs_downloader] DB 마이그레이션 실패: %s.%s",
+                        table_name,
+                        column_name,
+                    )
+                    return False
+            return True
 
     def scheduler_function(self) -> None:
         P.logger.debug("Scheduler start")
