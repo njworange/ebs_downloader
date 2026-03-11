@@ -82,9 +82,12 @@ class ModuleBasic(PluginModuleBase):
     def process_menu(self, page_name: str, req: flask.Request) -> flask.Response:
         arg = P.ModelSetting.to_dict()
         if page_name == "download":
-            arg["url_or_code"] = req.args.get("code") or P.ModelSetting.get(
+            query_code = (req.args.get("code") or "").strip()
+            arg["url_or_code"] = query_code or P.ModelSetting.get(
                 f"{self.name}_recent_url"
             )
+            arg["step_id"] = (req.args.get("step_id") or "").strip()
+            arg["auto_analyze"] = "True" if query_code else "False"
         return flask.render_template(f"{P.package_name}_{name}_{page_name}.html", arg=arg)
 
     def process_command(

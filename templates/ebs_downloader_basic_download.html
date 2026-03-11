@@ -36,6 +36,7 @@
 
 <script type="text/javascript">
 let currentAnalyze = null;
+let initialStepId = "{{ arg.get('step_id', '') }}";
 
 function qualityLabelFromCode(code) {
   switch ((code || '').toUpperCase()) {
@@ -128,9 +129,9 @@ function renderAnalyze(data) {
   $('#analyze_result').html(html);
 }
 
-function analyze() {
+function analyze(forceStepId=null) {
   const input = ($('#analyze_input').val() || '').trim();
-  const stepId = ($('#season_select').val() || '').trim();
+  const stepId = ((forceStepId !== null ? forceStepId : ($('#season_select').val() || '')) || '').trim();
   if (input === '') {
     notify('URL 또는 코드를 입력하세요.', 'warning');
     return;
@@ -170,7 +171,16 @@ $('body').on('click', '#analyze_url_btn', function(e){
 
 // URL/코드 변경 시 이전 분석 결과 초기화
 $('body').on('input', '#analyze_input', function(){
+  initialStepId = '';
   resetAnalyzeUi();
+});
+
+$(document).ready(function(){
+  const input = ($('#analyze_input').val() || '').trim();
+  if (input !== '' && "{{ arg.get('auto_analyze', 'False') }}" === 'True') {
+    analyze(initialStepId);
+    initialStepId = '';
+  }
 });
 
 $('body').on('click', '#download_selected_btn', function(e){

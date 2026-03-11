@@ -209,10 +209,13 @@ $("body").on('click', '#search_episode_btn', function(e){
 
 $("body").on('click', '#search_program_btn', function(e){
   e.preventDefault();
-  let title = $(this).data('title') || '';
-  if (title) {
-    $('#keyword').val(title);
-    globalRequestSearch(1);
+  const courseId = ($(this).data('course') || '').toString().trim();
+  const stepId = ($(this).data('step') || '').toString().trim();
+  if (courseId) {
+    const pathParts = window.location.pathname.split('/').filter(Boolean);
+    const packageName = (pathParts.length > 0) ? pathParts[0] : 'ebs_downloader';
+    const url = `/${packageName}/basic/download?code=${encodeURIComponent(courseId)}&step_id=${encodeURIComponent(stepId)}`;
+    window.location.href = url;
   }
 });
 
@@ -332,7 +335,7 @@ function make_list(data) {
     let actions = '';
     actions += j_button('download_item_btn', '다운로드', {'id': item.id}, 'primary', false);
     actions += j_button('search_episode_btn', '에피소드 검색', {'title': item.episode_title || ''}, 'dark');
-    actions += j_button('search_program_btn', '프로그램 검색', {'title': item.program_title || ''}, 'dark');
+    actions += j_button('search_program_btn', '프로그램 검색', {'course': item.course_id || '', 'step': item.step_id || ''}, 'dark');
     actions += j_button('show_json_btn', 'JSON', {'idx': i}, 'dark');
     actions += j_button('refresh_episode_btn', '갱신', {'id': item.id}, 'dark');
     actions += j_button('add_black_program_btn', '제외 프로그램', {'program': item.program_title || ''}, 'dark');
