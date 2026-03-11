@@ -77,18 +77,33 @@
         </button>
       </div>
       <div class="modal-body">
-        <div class="form-row align-items-end mb-3">
-          <div class="col-md-4">
+        <div class="border rounded px-3 py-3 mb-3" style="background:#fafcff;">
+          <div class="d-flex flex-wrap justify-content-between align-items-start mb-2">
+            <div>
+              <div class="small text-muted">원격 시즌 목록을 조회하고 필요한 화만 바로 큐에 추가할 수 있습니다.</div>
+            </div>
+            <div id="lookupSummaryBadge" class="small text-muted"></div>
+          </div>
+          <div class="form-row align-items-end">
+          <div class="col-md-4 mb-2">
             <label class="small text-muted mb-1">프로그램</label>
             <input id="lookupProgramTitle" type="text" class="form-control form-control-sm" readonly>
           </div>
-          <div class="col-md-4">
+          <div class="col-md-3 mb-2">
             <label class="small text-muted mb-1">시즌</label>
             <select id="lookupSeasonSelect" class="form-control form-control-sm"></select>
           </div>
-          <div class="col-md-4">
-            {{ macros.m_button_group([['lookupSeasonReloadBtn', '시즌 다시 조회'], ['lookupSelectAllBtn', '전체 선택'], ['lookupSelectNoneBtn', '전체 해제'], ['lookupDownloadSelectedBtn', '선택 다운로드 추가']]) }}
+          <div class="col-md-5 mb-2">
+            <div class="d-flex flex-wrap justify-content-md-end" style="gap:6px;">
+              <button id="lookupSeasonReloadBtn" class="btn btn-sm btn-outline-secondary">시즌 다시 조회</button>
+              <button id="lookupSelectAllBtn" class="btn btn-sm btn-outline-primary">전체 선택</button>
+              <button id="lookupSelectNoneBtn" class="btn btn-sm btn-outline-secondary">전체 해제</button>
+            </div>
+            <div class="d-flex justify-content-md-end mt-2">
+              <button id="lookupDownloadSelectedBtn" class="btn btn-sm btn-success">선택 다운로드 추가</button>
+            </div>
           </div>
+        </div>
         </div>
         <div id="lookupMessage" class="small text-muted mb-2"></div>
         <div id="lookupResult"></div>
@@ -360,6 +375,31 @@ function lookupEpNoToE(epNo) {
   return 'E' + s;
 }
 
+function lookupStatusMeta(ep) {
+  if (!ep || !ep.local_exists) {
+    return {label: '미수집', badge: 'badge badge-light border text-muted', hint: '아직 로컬 DB에 없습니다.'};
+  }
+  if (ep.local_completed) {
+    return {label: '완료', badge: 'badge badge-primary', hint: ep.local_message || '이미 다운로드 완료된 항목입니다.'};
+  }
+  switch ((ep.local_status || '').toUpperCase()) {
+    case 'WAITING':
+      return {label: '대기중', badge: 'badge badge-info', hint: ep.local_message || '다운로드 큐에 대기중입니다.'};
+    case 'DOWNLOADING':
+      return {label: '다운로드중', badge: 'badge badge-info', hint: ep.local_message || '현재 다운로드중입니다.'};
+    case 'FILTERED':
+      return {label: '필터 제외', badge: 'badge badge-warning', hint: ep.local_message || '현재 필터 조건에서 제외되어 있습니다.'};
+    case 'FAILED':
+    case 'GIVEUP':
+    case 'PREVIEW_BLOCKED':
+      return {label: ep.local_status, badge: 'badge badge-danger', hint: ep.local_message || '이전에 처리 실패한 항목입니다.'};
+    case 'PENDING':
+      return {label: '처리대기', badge: 'badge badge-secondary', hint: ep.local_message || '로컬 DB에 존재하며 아직 큐에 오르지 않은 항목입니다.'};
+    default:
+      return {label: '기존 항목', badge: 'badge badge-secondary', hint: ep.local_message || '로컬 DB에 존재하는 항목입니다.'};
+  }
+}
+
 function renderLookup(data) {
   lookupState = {
     courseId: (data && data.course_id) ? data.course_id : '',
@@ -369,8 +409,11 @@ function renderLookup(data) {
   };
 
   const programTitle = (data && (data.display_title || data.program_title)) ? (data.display_title || data.program_title) : '';
+  const existingCount = lookupState.episodes.filter(ep => ep && ep.local_exists).length;
+  const completedCount = lookupState.episodes.filter(ep => ep && ep.local_completed).length;
   $('#lookupProgramTitle').val(programTitle);
   $('#lookupMessage').text((lookupState.episodes.length > 0) ? `에피소드 ${lookupState.episodes.length}개` : '에피소드 목록이 없습니다.');
+  $('#lookupSummaryBadge').text(`로컬 존재 ${existingCount} / 완료 ${completedCount}`);
 
   let seasonOptions = '<option value="">자동</option>';
   for (const s of lookupState.seasons) {
@@ -396,13 +439,15 @@ function renderLookup(data) {
       const epNo = (ep.episode_no || '').toString();
       const rd = (ep.release_date || '').toString();
       const displayTitle = (ep.display_title || ep.program_title || programTitle || '').toString();
+      const statusMeta = lookupStatusMeta(ep);
       const filename = `${displayTitle}.${lookupEpNoToE(epNo)}.${lookupYymmddFromReleaseDate(rd)}.${qLabel}-EBS.mp4`;
       html += '<tr>';
       html += `<td><input type="checkbox" class="lookup_ep_check" data-index="${i}"></td>`;
       html += `<td>${thumb ? `<img src="${escapeHtml(thumb)}" style="max-width:100px; max-height:60px;"/>` : '-'}</td>`;
       html += '<td>';
-      html += `<div><strong>${escapeHtml(epNo ? (epNo + '회 ') : '')}${escapeHtml(epTitle)}</strong></div>`;
+      html += `<div class="d-flex flex-wrap align-items-center" style="gap:8px;"><strong>${escapeHtml(epNo ? (epNo + '회 ') : '')}${escapeHtml(epTitle)}</strong><span class="${statusMeta.badge}">${escapeHtml(statusMeta.label)}</span></div>`;
       html += `<div class="text-muted" style="font-size:0.9em;">방영일: ${escapeHtml(rd || '-')}</div>`;
+      html += `<div class="text-muted" style="font-size:0.9em;">상태 설명: ${escapeHtml(statusMeta.hint)}</div>`;
       html += `<div class="text-muted" style="font-size:0.9em;">예상 파일명: ${escapeHtml(filename)}</div>`;
       html += '</td>';
       html += `<td>${j_button('lookup_download_one_btn', '다운로드 추가', {'idx': i}, 'success')}</td>`;
@@ -423,6 +468,7 @@ function openProgramLookup(courseId, stepId='', keepOpen=false) {
   if (!keepOpen) {
     $('#lookupProgramTitle').val('');
     $('#lookupSeasonSelect').html('<option value="">자동</option>');
+    $('#lookupSummaryBadge').text('');
     $('#lookupMessage').text('프로그램 정보를 불러오는 중입니다...');
     $('#lookupResult').html('<div class="text-center text-muted py-4">불러오는 중...</div>');
     $('#programLookupModal').modal('show');

@@ -240,12 +240,20 @@ class ModuleAuto(PluginModuleBase):
                         user_agent=user_agent,
                     )
                     if result.get("success"):
-                        ret["data"] = result.get("data") or {}
+                        data = result.get("data") or {}
+                        episodes = data.get("episodes") or []
+                        if isinstance(episodes, list):
+                            self.annotate_lookup_episodes(episodes)
+                        ret["data"] = data
                         ret["msg"] = result.get("message") or "분석 완료"
                     else:
                         ret["ret"] = "warning"
                         ret["msg"] = result.get("message") or "분석 실패"
-                        ret["data"] = result.get("data") or {}
+                        data = result.get("data") or {}
+                        episodes = data.get("episodes") or []
+                        if isinstance(episodes, list):
+                            self.annotate_lookup_episodes(episodes)
+                        ret["data"] = data
             case "download_lookup":
                 try:
                     payload = json.loads(arg1 or "[]")
@@ -313,6 +321,32 @@ class ModuleAuto(PluginModuleBase):
             if self.enqueue_item(item.id):
                 queued += 1
         return added, queued, skipped
+
+    def annotate_lookup_episodes(self, episodes: list[dict]) -> None:
+        for ep in episodes:
+            if not isinstance(ep, dict):
+                continue
+            course_id = (ep.get("course_id") or "").strip()
+            lect_id = (ep.get("lect_id") or "").strip()
+            step_id_val = (ep.get("step_id") or "").strip()
+            if (not course_id) or (not lect_id) or (not step_id_val):
+                ep["local_exists"] = False
+                ep["local_status"] = ""
+                ep["local_message"] = ""
+                continue
+
+            item = ModelEbsEpisode.get_by_keys(course_id, lect_id, step_id_val)
+            if not item:
+                ep["local_exists"] = False
+                ep["local_status"] = ""
+                ep["local_message"] = ""
+                continue
+
+            ep["local_exists"] = True
+            ep["local_id"] = item.id
+            ep["local_completed"] = bool(item.completed)
+            ep["local_status"] = item.status or ("COMPLETED" if item.completed else "")
+            ep["local_message"] = item.message or ""
 
     def plugin_load(self) -> None:
         schema_ready = self.ensure_schema_columns()
