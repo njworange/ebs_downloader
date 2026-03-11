@@ -66,6 +66,40 @@
   </div>
 </div>
 
+<!-- 프로그램 조회 모달 -->
+<div class="modal fade" id="programLookupModal" tabindex="-1" role="dialog" aria-hidden="true">
+  <div class="modal-dialog modal-xl" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">프로그램 에피소드 조회</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row align-items-end mb-3">
+          <div class="col-md-4">
+            <label class="small text-muted mb-1">프로그램</label>
+            <input id="lookupProgramTitle" type="text" class="form-control form-control-sm" readonly>
+          </div>
+          <div class="col-md-4">
+            <label class="small text-muted mb-1">시즌</label>
+            <select id="lookupSeasonSelect" class="form-control form-control-sm"></select>
+          </div>
+          <div class="col-md-4">
+            {{ macros.m_button_group([['lookupSeasonReloadBtn', '시즌 다시 조회'], ['lookupSelectAllBtn', '전체 선택'], ['lookupSelectNoneBtn', '전체 해제'], ['lookupDownloadSelectedBtn', '선택 다운로드 추가']]) }}
+          </div>
+        </div>
+        <div id="lookupMessage" class="small text-muted mb-2"></div>
+        <div id="lookupResult"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-dismiss="modal">닫기</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- JSON 모달 -->
 <div class="modal fade" id="jsonModal" tabindex="-1" role="dialog" aria-hidden="true">
   <div class="modal-dialog modal-lg" role="document">
@@ -89,6 +123,7 @@
 <script type="text/javascript">
 var last_list_option = "{{arg['ebs_downloader_auto_last_list_option']}}";
 var listData = [];
+var lookupState = null;
 
 $(document).ready(function(){
   let tmp = last_list_option.split('|');
@@ -212,11 +247,47 @@ $("body").on('click', '#search_program_btn', function(e){
   const courseId = ($(this).data('course') || '').toString().trim();
   const stepId = ($(this).data('step') || '').toString().trim();
   if (courseId) {
-    const pathParts = window.location.pathname.split('/').filter(Boolean);
-    const packageName = (pathParts.length > 0) ? pathParts[0] : 'ebs_downloader';
-    const url = `/${packageName}/basic/download?code=${encodeURIComponent(courseId)}&step_id=${encodeURIComponent(stepId)}`;
-    window.location.href = url;
+    openProgramLookup(courseId, stepId);
   }
+});
+
+$("body").on('click', '#lookupSeasonReloadBtn', function(e){
+  e.preventDefault();
+  if (!lookupState || !lookupState.courseId) return;
+  openProgramLookup(lookupState.courseId, ($('#lookupSeasonSelect').val() || '').toString().trim(), true);
+});
+
+$("body").on('click', '#lookupSelectAllBtn', function(e){
+  e.preventDefault();
+  $('.lookup_ep_check').prop('checked', true);
+});
+
+$("body").on('click', '#lookupSelectNoneBtn', function(e){
+  e.preventDefault();
+  $('.lookup_ep_check').prop('checked', false);
+});
+
+$("body").on('click', '#lookupDownloadSelectedBtn', function(e){
+  e.preventDefault();
+  if (!lookupState || !lookupState.episodes) {
+    notify('먼저 프로그램 조회를 실행하세요.', 'warning');
+    return;
+  }
+  const indices = $('.lookup_ep_check:checked').map(function(){ return parseInt($(this).data('index'), 10); }).get();
+  if (!indices.length) {
+    notify('선택된 항목이 없습니다.', 'warning');
+    return;
+  }
+  const episodes = indices.map(i => lookupState.episodes[i]).filter(x => x);
+  downloadLookupEpisodes(episodes);
+});
+
+$("body").on('click', '.lookup_download_one_btn', function(e){
+  e.preventDefault();
+  if (!lookupState || !lookupState.episodes) return;
+  const idx = parseInt($(this).data('idx'), 10);
+  if (isNaN(idx) || !lookupState.episodes[idx]) return;
+  downloadLookupEpisodes([lookupState.episodes[idx]]);
 });
 
 // ── 확장 버튼: JSON ──
@@ -261,6 +332,121 @@ function escapeHtml(text) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+function lookupQualityLabelFromCode(code) {
+  switch ((code || '').toUpperCase()) {
+    case 'M50': return '1080p';
+    case 'M20': return '720p';
+    case 'M10': return '480p';
+    case 'M05': return '360p';
+    default: return (code || '').toString();
+  }
+}
+
+function lookupYymmddFromReleaseDate(releaseDate) {
+  const digits = (releaseDate || '').toString().replace(/[^0-9]/g, '');
+  if (digits.length >= 8) return digits.slice(2, 8);
+  const m = (releaseDate || '').match(/(\d{4})\.(\d{2})\.(\d{2})/);
+  if (!m) return '000000';
+  return m[1].slice(2) + m[2] + m[3];
+}
+
+function lookupEpNoToE(epNo) {
+  const s = (epNo || '').toString().trim();
+  if (s === '') return 'E00';
+  const n = parseInt(s.replace(/[^0-9]/g, ''), 10);
+  if (!isNaN(n)) return 'E' + String(n).padStart(2, '0');
+  return 'E' + s;
+}
+
+function renderLookup(data) {
+  lookupState = {
+    courseId: (data && data.course_id) ? data.course_id : '',
+    stepId: (data && data.step_id) ? data.step_id : '',
+    seasons: (data && data.seasons) ? data.seasons : [],
+    episodes: (data && data.episodes) ? data.episodes : []
+  };
+
+  const programTitle = (data && (data.display_title || data.program_title)) ? (data.display_title || data.program_title) : '';
+  $('#lookupProgramTitle').val(programTitle);
+  $('#lookupMessage').text((lookupState.episodes.length > 0) ? `에피소드 ${lookupState.episodes.length}개` : '에피소드 목록이 없습니다.');
+
+  let seasonOptions = '<option value="">자동</option>';
+  for (const s of lookupState.seasons) {
+    const sid = (s.step_id || '');
+    const name = (s.name || sid);
+    const sel = (sid === lookupState.stepId) ? ' selected' : '';
+    seasonOptions += `<option value="${escapeHtml(sid)}"${sel}>${escapeHtml(name)}</option>`;
+  }
+  $('#lookupSeasonSelect').html(seasonOptions);
+
+  const qLabel = lookupQualityLabelFromCode("{{ arg.get('basic_quality', 'M50') }}");
+  let html = '';
+  if (!lookupState.episodes.length) {
+    html = '<div class="text-center text-muted py-4">에피소드 목록이 없습니다.</div>';
+  } else {
+    html += '<div class="table-responsive">';
+    html += '<table class="table table-sm table-hover">';
+    html += '<thead><tr><th style="width:30px;"></th><th style="width:120px;">썸네일</th><th>정보</th><th style="width:150px;">동작</th></tr></thead><tbody>';
+    for (let i = 0; i < lookupState.episodes.length; i++) {
+      const ep = lookupState.episodes[i];
+      const thumb = ep.thumbnail || '';
+      const epTitle = (ep.episode_title || '').toString();
+      const epNo = (ep.episode_no || '').toString();
+      const rd = (ep.release_date || '').toString();
+      const displayTitle = (ep.display_title || ep.program_title || programTitle || '').toString();
+      const filename = `${displayTitle}.${lookupEpNoToE(epNo)}.${lookupYymmddFromReleaseDate(rd)}.${qLabel}-EBS.mp4`;
+      html += '<tr>';
+      html += `<td><input type="checkbox" class="lookup_ep_check" data-index="${i}"></td>`;
+      html += `<td>${thumb ? `<img src="${escapeHtml(thumb)}" style="max-width:100px; max-height:60px;"/>` : '-'}</td>`;
+      html += '<td>';
+      html += `<div><strong>${escapeHtml(epNo ? (epNo + '회 ') : '')}${escapeHtml(epTitle)}</strong></div>`;
+      html += `<div class="text-muted" style="font-size:0.9em;">방영일: ${escapeHtml(rd || '-')}</div>`;
+      html += `<div class="text-muted" style="font-size:0.9em;">예상 파일명: ${escapeHtml(filename)}</div>`;
+      html += '</td>';
+      html += `<td>${j_button('lookup_download_one_btn', '다운로드 추가', {'idx': i}, 'success')}</td>`;
+      html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+  }
+  $('#lookupResult').html(html);
+}
+
+function openProgramLookup(courseId, stepId='', keepOpen=false) {
+  const normalizedCourseId = (courseId || '').toString().trim();
+  const normalizedStepId = (stepId || '').toString().trim();
+  if (!normalizedCourseId) {
+    notify('코스 ID가 없습니다.', 'warning');
+    return;
+  }
+  if (!keepOpen) {
+    $('#lookupProgramTitle').val('');
+    $('#lookupSeasonSelect').html('<option value="">자동</option>');
+    $('#lookupMessage').text('프로그램 정보를 불러오는 중입니다...');
+    $('#lookupResult').html('<div class="text-center text-muted py-4">불러오는 중...</div>');
+    $('#programLookupModal').modal('show');
+  }
+  globalSendCommand('program_lookup', normalizedCourseId, normalizedStepId, null, function(ret){
+    if (ret.ret === 'success') {
+      notify(ret.msg || '프로그램 조회 완료', 'success');
+      renderLookup(ret.data || {});
+    } else {
+      notify(ret.msg || '프로그램 조회 실패', 'warning');
+      renderLookup(ret.data || {course_id: normalizedCourseId, step_id: normalizedStepId, episodes: [], seasons: []});
+    }
+  });
+}
+
+function downloadLookupEpisodes(episodes) {
+  globalSendCommand('download_lookup', JSON.stringify(episodes || []), null, null, function(ret){
+    if (ret.ret === 'success') {
+      notify(ret.msg || '큐에 추가했습니다.', 'success');
+      globalRequestSearch(current_page || 1);
+    } else {
+      notify(ret.msg || '추가 실패', 'warning');
+    }
+  });
 }
 
 function make_list(data) {
